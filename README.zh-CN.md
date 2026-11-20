@@ -47,6 +47,16 @@ OpenAI 的 gpt-6 系列在 `/v1/chat/completions` 下只要带上工具就会直
 - 一个 OpenAI API key
 - 国内网络需要本地 HTTP 代理（默认按 `127.0.0.1:7897` 走，即 Clash 的默认端口）
 
+## 让 AI 帮你装
+
+下载 [最新 zip](https://github.com/Angle084/workbuddy-openai-api/archive/refs/heads/master.zip)，解压后把**整个文件夹**交给你的 AI 助手，说一句：
+
+> 按 AI-SETUP.zh-CN.md 帮我装好
+
+[`AI-SETUP.zh-CN.md`](AI-SETUP.zh-CN.md) 是一份写给 agent 的执行手册：环境探测、配置生成、四项验收、Windows 常驻，以及一张对照真实错误码的排查表。里面明确规定了"没有实测输出不许说装好了"——这一点很关键，因为网关没起来时表现出来的是"客户端坏了"，而不是"网关没开"。
+
+想自己动手的话，继续往下看。
+
 ## 快速开始
 
 ### 1. 创建配置文件
