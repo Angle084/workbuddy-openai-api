@@ -1,0 +1,17 @@
+node_modules/
+
+# Local secrets: never commit the gateway env file
+*.env
+.env
+oa-gateway-v2.env
+
+# Logs and local backups
+*.log
+*.bak
+*.bak-*
+
+# Editor / OS noise
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store

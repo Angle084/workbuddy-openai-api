@@ -1,0 +1,28 @@
+{
+  "name": "workbuddy-openai-api",
+  "version": "2.1.0",
+  "description": "Zero-dependency local gateway that lets Chat Completions clients use OpenAI Responses-only models (gpt-6 series)",
+  "main": "oa-gateway.js",
+  "bin": {
+    "oa-gateway": "oa-gateway.js"
+  },
+  "scripts": {
+    "start": "node oa-gateway.js",
+    "test": "node oa-gateway.test.js",
+    "check": "node oa-gateway.js --check-config",
+    "probe": "node oa-gateway.js --probe-summary"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "keywords": [
+    "openai",
+    "responses-api",
+    "chat-completions",
+    "gateway",
+    "adapter",
+    "workbuddy",
+    "gpt-6"
+  ],
+  "license": "MIT"
+}
