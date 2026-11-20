@@ -1,0 +1,41 @@
+把整个文件夹交给你的 AI
+========================
+
+解压后你看到的就是这个文件夹。不需要自己看代码，也不需要自己配。
+
+在 WorkBuddy（或任何 AI 助手）里，把这个文件夹整个发过去，然后说一句：
+
+    按 AI-SETUP.zh-CN.md 帮我装好
+
+AI 会读取 AI-SETUP.zh-CN.md，按里面的步骤探测环境、生成配置、启动网关、
+跑四项验收测试，最后把结果报给你。
+
+中途它只会问你两件事：OpenAI API Key，以及要接入哪几个模型。
+
+安装前提（AI 也会自己检查）：
+  - Node.js 22 或更高
+  - 一个 OpenAI API Key
+  - 国内网络需要本地代理（默认按 127.0.0.1:7897，即 Clash 默认端口；
+    没有代理的话 AI 会帮你关掉这一项）
+
+想自己动手装：看 README.zh-CN.md 的「快速开始」。
+想了解这东西为什么存在：看 README.zh-CN.md 的「为什么需要它」。
+
+----------------------------------------------------------------
+
+Hand this folder to your AI
+===========================
+
+Unzip, then give the whole folder to your AI assistant and say:
+
+    Install this following AI-SETUP.md
+
+The AI reads AI-SETUP.md, probes your environment, generates the config,
+starts the gateway, runs four verification tests, and reports the results.
+It will only ask you for an API key and which models to add.
+
+Requirements: Node.js 22+, an OpenAI API key, and a local HTTP proxy
+if api.openai.com is not directly reachable from your network.
+
+Prefer doing it yourself: see "Quick start" in README.md.
+Want to know why this exists: see "Why this exists" in README.md.

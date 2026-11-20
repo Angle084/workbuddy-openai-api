@@ -49,9 +49,11 @@ What gets translated: `messages → input`, flattened `tools`, `tool_calls ↔ f
 
 ## Let an AI do the install
 
-Download the [latest zip](https://github.com/Angle084/workbuddy-openai-api/archive/refs/heads/master.zip), unzip it, and hand the whole folder to an AI assistant with:
+Go to [Releases](../../releases/latest), download **`workbuddy-openai-api-vX.Y.Z.zip`** from the Assets section, unzip it, and hand the whole folder to an AI assistant with:
 
 > Install this following AI-SETUP.md
+
+The zip contains a `START-HERE.txt` saying exactly that, in case you want to read it before handing anything over.
 
 [`AI-SETUP.md`](AI-SETUP.md) is a step-by-step execution manual written for an agent: environment probing, config generation, the four verification tests, Windows persistence, and a troubleshooting table mapped to real error codes. It includes explicit rules against claiming success without test evidence — worth knowing, since a gateway that silently isn't running looks like a broken client.
 

@@ -3,3 +3,6 @@
 # Windows batch files must keep CRLF
 *.cmd text eol=crlf
 *.bat text eol=crlf
+
+# Plain-text entry point is opened in Notepad on Windows
+*.txt text eol=crlf

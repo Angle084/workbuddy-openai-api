@@ -49,9 +49,11 @@ OpenAI 的 gpt-6 系列在 `/v1/chat/completions` 下只要带上工具就会直
 
 ## 让 AI 帮你装
 
-下载 [最新 zip](https://github.com/Angle084/workbuddy-openai-api/archive/refs/heads/master.zip)，解压后把**整个文件夹**交给你的 AI 助手，说一句：
+到 [Releases](../../releases/latest) 页面，在 Assets 里下载 **`workbuddy-openai-api-vX.Y.Z.zip`**，解压后把**整个文件夹**交给你的 AI 助手，说一句：
 
 > 按 AI-SETUP.zh-CN.md 帮我装好
+
+zip 里有个 `START-HERE.txt`，内容就是上面这句话，可以先把东西发出去之前扫一眼。
 
 [`AI-SETUP.zh-CN.md`](AI-SETUP.zh-CN.md) 是一份写给 agent 的执行手册：环境探测、配置生成、四项验收、Windows 常驻，以及一张对照真实错误码的排查表。里面明确规定了"没有实测输出不许说装好了"——这一点很关键，因为网关没起来时表现出来的是"客户端坏了"，而不是"网关没开"。
 
