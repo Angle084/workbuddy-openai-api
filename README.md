@@ -1,102 +1,104 @@
-# WorkBuddy 接入 OpenAI API
+# WorkBuddy + OpenAI API
 
-> 一个零依赖的本地网关，让只支持 Chat Completions 协议的客户端（如 WorkBuddy）用上只提供 Responses API 的模型（如 gpt-6 系列）。
+[简体中文](README.zh-CN.md) | **English**
+
+> A zero-dependency local gateway that lets Chat Completions clients (such as WorkBuddy) use models that only expose the Responses API, such as the gpt-6 series.
 
 ---
 
-## 为什么需要它
+## Why this exists
 
-OpenAI 的 gpt-6 系列在 `/v1/chat/completions` 下只要带上工具就会直接被拒：
+The gpt-6 family rejects any request that combines function tools with reasoning effort on `/v1/chat/completions`:
 
 ```
 400 Function tools with reasoning_effort are not supported in chat/completions
 ```
 
-而在 `/v1/responses` 下完全正常。也就是说，问题不在 key、不在网络、不在模型权限，而是**两种协议的字段不兼容**。
+The exact same request works on `/v1/responses`. So the problem is not your key, not your network, and not model access — it is a protocol mismatch between two API shapes.
 
-这个网关就夹在中间，把请求逐字段翻译过去，再把结果翻译回来：
+This gateway sits in the middle, translating field by field in both directions:
 
 ```
-客户端 ──chat/completions──▶ 网关 :8788 ──/v1/responses──▶ api.openai.com
-        ◀──── SSE ────        ◀──── SSE ────
+Client ──chat/completions──▶ gateway :8788 ──/v1/responses──▶ api.openai.com
+       ◀──── SSE ────       ◀──── SSE ────
 ```
 
-翻译的内容包括：`messages → input`、`tools` 拍平、`tool_calls ↔ function_call`、SSE 事件流、图片输入、思考摘要。
+What gets translated: `messages → input`, flattened `tools`, `tool_calls ↔ function_call`, SSE event streams, image inputs, and reasoning summaries.
 
-## 特性
+## Features
 
-| 特性 | 说明 |
+| Feature | Notes |
 |---|---|
-| **零依赖** | 只用 Node 内置模块，没有 `node_modules`，clone 下来直接跑 |
-| **本地鉴权** | 必须携带 `Bearer <LOCAL_TOKEN>`，`timingSafeEqual` 比对；同机其他程序不能白用你的 key |
-| **密钥隔离** | API key 只存放在权限 `0600` 的 env 文件里，客户端配置中只有本地 token |
-| **流式** | SSE 逐帧转发，正文与思考分片按序下发 |
-| **工具调用** | 完整支持 `tools` / `tool_choice` / 并行调用 / 多轮结果回传 |
-| **图片输入** | 支持 `image_url`，包括 base64 data URL |
-| **思考摘要** | 可开启，上游返回时转成 `reasoning_content` 下发 |
-| **分阶段超时** | connect / tunnel / tls / headers / idle 分开计时，报错能定位到具体阶段 |
-| **资源上限** | 最大并发、body 大小、单事件大小均可配置 |
-| **25 项单测** | 含 CONNECT 被拒、TLS 超时、下游中断取消挂起连接等边界场景 |
-| **离线探针** | `--probe-summary` 造假上游，不花一分钱验证思考流时序 |
+| **Zero dependencies** | Node built-ins only — no `node_modules`, clone and run |
+| **Local auth** | Requires `Bearer <LOCAL_TOKEN>`, compared with `timingSafeEqual`; other local programs cannot ride on your key |
+| **Key isolation** | Your API key lives only in a `0600` env file; the client config holds just the local token |
+| **Streaming** | SSE forwarded frame by frame; reasoning and text deltas arrive in order |
+| **Tool calling** | Full support for `tools` / `tool_choice` / parallel calls / multi-turn results |
+| **Image input** | Supports `image_url`, including base64 data URLs |
+| **Reasoning summaries** | Optional; surfaced as `reasoning_content` when upstream provides them |
+| **Staged timeouts** | connect / tunnel / tls / headers / idle timed separately, so errors name the failing stage |
+| **Resource limits** | Max concurrency, body size, and per-event size are all configurable |
+| **25 unit tests** | Covers refused CONNECT, TLS timeout, and cancelling pending connections on client disconnect |
+| **Offline probe** | `--probe-summary` fakes the upstream so you can verify reasoning-stream ordering without spending a cent |
 
-## 前置要求
+## Requirements
 
-- **Node.js 22 或更高**（用到 `process.loadEnvFile`）
-- 一个 OpenAI API key
-- 国内网络需要本地 HTTP 代理（默认按 `127.0.0.1:7897` 走，即 Clash 的默认端口）
+- **Node.js 22 or newer** (uses `process.loadEnvFile`)
+- An OpenAI API key
+- A local HTTP proxy if `api.openai.com` is not directly reachable from your network — the gateway defaults to `127.0.0.1:7897`, the usual Clash port
 
-## 快速开始
+## Quick start
 
-### 1. 创建配置文件
+### 1. Create the config file
 
-密钥文件默认放在 `~/.workbuddy/oa-gateway-v2.env`（Windows 为 `C:\Users\<你>\.workbuddy\oa-gateway-v2.env`）。
+By default the secret file is read from `~/.workbuddy/oa-gateway-v2.env` (on Windows: `C:\Users\<you>\.workbuddy\oa-gateway-v2.env`).
 
-手动创建，内容两行：
+Create it manually with two lines:
 
 ```ini
-OPENAI_API_KEY=sk-proj-你的真实密钥
-OA_GW_LOCAL_TOKEN=自己生成一串至少24位的随机字符串
+OPENAI_API_KEY=sk-proj-your-real-key
+OA_GW_LOCAL_TOKEN=some-random-string-at-least-24-chars
 ```
 
-`OA_GW_LOCAL_TOKEN` 可以用下面的命令生成：
+Generate the local token with:
 
 ```bash
 node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
 ```
 
-> 两个值必须不同，否则启动时会被拒绝。这个 token 是给客户端用的，不是给 OpenAI 用的。
+> The two values must differ, or startup is refused. This token is for your client, not for OpenAI.
 
-### 2. 校验配置
+### 2. Check the config
 
 ```bash
 node oa-gateway.js --check-config
 ```
 
-正常输出类似：
+Expected output:
 
 ```json
 {"config":"ok","version":"2.1.0","listen":"127.0.0.1:8788","upstream":"api.openai.com","proxy":"127.0.0.1:7897","localAuth":"required","reasoningSummary":"off","requestsSent":0}
 ```
 
-注意 `requestsSent: 0`，这一步不发任何请求，不产生费用。
+Note `requestsSent: 0` — this step sends nothing and costs nothing.
 
-### 3. 启动
+### 3. Start it
 
 ```bash
 node oa-gateway.js
 ```
 
-Windows 也可以双击 `Start-Gateway.cmd`。
+On Windows you can also double-click `Start-Gateway.cmd`.
 
-看到下面这行就说明起来了：
+You are up when you see:
 
 ```
 [gateway 2.1.0] listening on http://127.0.0.1:8788/v1
 ```
 
-### 4. 在客户端里填地址
+### 4. Point your client at it
 
-WorkBuddy 的 `~/.workbuddy/models.json` 中，每条自定义模型：
+In WorkBuddy's `~/.workbuddy/models.json`, for each custom model:
 
 ```json
 {
@@ -104,7 +106,7 @@ WorkBuddy 的 `~/.workbuddy/models.json` 中，每条自定义模型：
   "name": "GPT-6.2 SOL",
   "vendor": "OpenAI",
   "url": "http://127.0.0.1:8788/v1",
-  "apiKey": "这里填 OA_GW_LOCAL_TOKEN 的值，不是 sk- 密钥",
+  "apiKey": "put OA_GW_LOCAL_TOKEN here, not your sk- key",
   "maxInputTokens": 922000,
   "maxOutputTokens": 128000,
   "supportsToolCall": true,
@@ -117,91 +119,91 @@ WorkBuddy 的 `~/.workbuddy/models.json` 中，每条自定义模型：
 }
 ```
 
-`id` 必须是 OpenAI 的**真实模型名**，网关按它转发。
+`id` must be the **real** OpenAI model name — the gateway forwards it as-is.
 
-## 配置项
+## Configuration
 
-全部通过环境变量控制，写在 env 文件里或启动前设置。
+Everything is driven by environment variables, either in the env file or set before launch.
 
-### 必填
+### Required
 
-| 变量 | 说明 |
+| Variable | Description |
 |---|---|
-| `OPENAI_API_KEY` | OpenAI 密钥 |
-| `OA_GW_LOCAL_TOKEN` | 客户端使用的本地令牌，≥24 字符，需与上面的 key 不同 |
+| `OPENAI_API_KEY` | Your OpenAI key |
+| `OA_GW_LOCAL_TOKEN` | Token your client sends; ≥24 chars, must differ from the key above |
 
-### 网络
+### Network
 
-| 变量 | 默认 | 说明 |
+| Variable | Default | Description |
 |---|---|---|
-| `OA_GW_PORT` | `8788` | 监听端口（仅 127.0.0.1） |
-| `OA_GW_UPSTREAM` | `api.openai.com` | 上行主机名 |
-| `OA_GW_UPSTREAM_PORT` | `443` | 上行端口 |
-| `OA_GW_BASE` | `/v1` | 上行路径前缀 |
-| `OA_GW_PROXY_HOST` | `127.0.0.1` | HTTP 代理地址 |
-| `OA_GW_PROXY_PORT` | `7897` | HTTP 代理端口 |
-| `OA_GW_NO_PROXY` | — | 设为 `1` 则**直连**，不走代理 |
+| `OA_GW_PORT` | `8788` | Listen port (127.0.0.1 only) |
+| `OA_GW_UPSTREAM` | `api.openai.com` | Upstream hostname |
+| `OA_GW_UPSTREAM_PORT` | `443` | Upstream port |
+| `OA_GW_BASE` | `/v1` | Upstream path prefix |
+| `OA_GW_PROXY_HOST` | `127.0.0.1` | HTTP proxy host |
+| `OA_GW_PROXY_PORT` | `7897` | HTTP proxy port |
+| `OA_GW_NO_PROXY` | — | Set to `1` to connect **directly**, bypassing the proxy |
 
-> **海外用户注意**：代理默认是**开启**的。如果你的环境不需要代理，务必设置 `OA_GW_NO_PROXY=1`，否则会连接失败。
+> **If you don't need a proxy, set `OA_GW_NO_PROXY=1`.** The proxy is enabled by default; leaving it on in an environment without a local proxy just produces connection errors that look like gateway bugs.
 
-### 超时（毫秒）
+### Timeouts (milliseconds)
 
-| 变量 | 默认 | 说明 |
+| Variable | Default | Stage |
 |---|---|---|
-| `OA_GW_CONNECT_MS` | `15000` | TCP 连接 |
-| `OA_GW_TUNNEL_MS` | `20000` | 代理 CONNECT 隧道 |
-| `OA_GW_TLS_MS` | `20000` | TLS 握手 |
-| `OA_GW_HEADERS_MS` | `180000` | 等待响应头 |
-| `OA_GW_IDLE_MS` | `300000` | 流式空闲上限 |
-| `OA_GW_TIMEOUT` | `600000` | 整体上限 |
-| `OA_GW_BODY_MS` | `120000` | 请求体接收 |
+| `OA_GW_CONNECT_MS` | `15000` | TCP connect |
+| `OA_GW_TUNNEL_MS` | `20000` | Proxy CONNECT tunnel |
+| `OA_GW_TLS_MS` | `20000` | TLS handshake |
+| `OA_GW_HEADERS_MS` | `180000` | Waiting for response headers |
+| `OA_GW_IDLE_MS` | `300000` | Max idle during streaming |
+| `OA_GW_TIMEOUT` | `600000` | Overall request |
+| `OA_GW_BODY_MS` | `120000` | Receiving request body |
 
-### 资源与行为
+### Resources and behaviour
 
-| 变量 | 默认 | 说明 |
+| Variable | Default | Description |
 |---|---|---|
-| `OA_GW_MAX_CONCURRENT` | `8` | 最大并发上游连接 |
-| `OA_GW_MAX_BODY_BYTES` | `64MiB` | 请求体上限 |
-| `OA_GW_MAX_EVENT_BYTES` | `32MiB` | 单个 SSE 事件上限 |
-| `OA_GW_MAX_UPSTREAM_BYTES` | `64MiB` | 上游响应总上限 |
-| `OA_GW_REASONING_SUMMARY` | `off` | 思考摘要：`off` / `auto` |
-| `OA_GW_SUMMARY_MODELS` | 空 | 只对这些模型开启摘要，逗号分隔 |
-| `OA_GW_NONE_MODELS` | `gpt-6-luna,gpt-6.1-terra` | 支持 `none` 档（完全关闭思考）的模型；不在列表里的模型收到"关闭"会降级为 `low` |
-| `OA_GW_CARRY_REASONING` | 开 | 设为 `0` 则不把思考回传进多轮历史 |
-| `OA_GW_LOG` | 开 | 设为 `0` 关闭请求日志 |
-| `OA_GW_MODELS_FILE` | `~/.workbuddy/models.json` | `--init-config` 读取密钥的来源 |
+| `OA_GW_MAX_CONCURRENT` | `8` | Max concurrent upstream connections |
+| `OA_GW_MAX_BODY_BYTES` | `64MiB` | Request body limit |
+| `OA_GW_MAX_EVENT_BYTES` | `32MiB` | Single SSE event limit |
+| `OA_GW_MAX_UPSTREAM_BYTES` | `64MiB` | Total upstream response limit |
+| `OA_GW_REASONING_SUMMARY` | `off` | Reasoning summaries: `off` / `auto` |
+| `OA_GW_SUMMARY_MODELS` | empty | Only enable summaries for these models, comma-separated |
+| `OA_GW_NONE_MODELS` | `gpt-6-luna,gpt-6.1-terra` | Models that support the `none` effort (thinking fully off); others downgrade a "disable" request to `low` |
+| `OA_GW_CARRY_REASONING` | on | Set `0` to stop carrying reasoning into multi-turn history |
+| `OA_GW_LOG` | on | Set `0` to silence request logs |
+| `OA_GW_MODELS_FILE` | `~/.workbuddy/models.json` | Source `--init-config` reads the key from |
 
-> `OA_GW_NONE_MODELS` 需要跟 OpenAI 的模型更新同步。如果某天新模型支持了 `none` 档，把它加进这个列表，否则客户端选择"关闭思考"只会降级到 `low`。
+> `OA_GW_NONE_MODELS` has to be kept in sync with OpenAI's model lineup. When a new model gains the `none` effort, add it here — otherwise choosing "disable thinking" in the client silently degrades to `low`.
 
-## 命令行参数
+## CLI
 
-| 参数 | 作用 |
+| Flag | Purpose |
 |---|---|
-| 无参数 | 启动网关 |
-| `--check-config` | 只校验配置并打印摘要，不监听、不发请求 |
-| `--config-file PATH` | 使用指定路径的 env 文件 |
-| `--init-config MODEL_ID` | 从 models.json 读取指定模型的 `sk-` 密钥，生成 env 文件（`0600`，已存在则不覆盖） |
-| `--probe-summary` | 启动离线合成探针（见下） |
+| none | Start the gateway |
+| `--check-config` | Validate config and print a summary; no listener, no requests |
+| `--config-file PATH` | Use a specific env file |
+| `--init-config MODEL_ID` | Read the `sk-` key for that model from models.json and write the env file (`0600`, never overwrites) |
+| `--probe-summary` | Start the offline synthetic probe (see below) |
 
-## 思考摘要
+## Reasoning summaries
 
-默认 `off`。开启方式：
+Off by default. To enable:
 
 ```ini
 OA_GW_REASONING_SUMMARY=auto
 ```
 
-开启后，上游若返回 `response.reasoning_summary_text.delta`，网关会转成 `delta.reasoning_content` 下发，客户端就能显示思考块。
+When enabled, any `response.reasoning_summary_text.delta` from upstream is converted to `delta.reasoning_content` and forwarded, so the client can render a thinking block.
 
-**为什么有时候看不到思考内容**
+**Why thinking sometimes doesn't show up**
 
-这是上游行为，不是网关丢数据。实测结论：只有模型真正"想得久"时才会产出摘要；简单问题直接作答、`reasoning_tokens` 接近 0 时，摘要就是空的。同一个请求连发三次，可能是 79 个摘要事件、0 个、74 个。
+That is upstream behaviour, not dropped data. In practice summaries only appear when the model actually thinks for a while; on simple prompts where `reasoning_tokens` stays near zero the summary is empty. The same request sent three times in a row produced 79 summary events, then 0, then 74.
 
-另外，开启摘要会额外消耗 output token（俗称"思考摘要税"），按模型输出价计费。介意成本可以用 `OA_GW_SUMMARY_MODELS` 只对特定模型开启。
+Enabling summaries also costs extra output tokens, billed at the model's output rate. If that matters, use `OA_GW_SUMMARY_MODELS` to enable it only for selected models.
 
-## 离线探针
+## Offline probe
 
-`--probe-summary` 会起一个**假上游**，把"思考先到、正文后到"的时序合成出来，端口仍是 8788：
+`--probe-summary` starts a **fake upstream** that synthesises the "reasoning first, text second" ordering, still on port 8788:
 
 ```bash
 node oa-gateway.js --probe-summary
@@ -211,26 +213,26 @@ node oa-gateway.js --probe-summary
 Local fake-token only: local-summary-probe-only; model: gateway-thinking-probe; no upstream network.
 ```
 
-然后用这个假 token 请求 `gateway-thinking-probe`，就能验证客户端能不能正确渲染思考块——**不花一分钱、不联网、不需要真 key**。改客户端界面或排查渲染问题时很有用。
+Request `gateway-thinking-probe` with that fake token to check whether your client renders the thinking block correctly — **no cost, no network, no real key**. Useful when changing client UI or debugging rendering.
 
-## 测试
+## Tests
 
 ```bash
 node oa-gateway.test.js
 ```
 
-25 项，覆盖协议转换、SSE 解析、工具调用、超时分类、断连取消等。全程不联网、不花钱。
+25 tests covering protocol conversion, SSE parsing, tool calls, timeout classification, and disconnect cancellation. No network, no cost.
 
-## 已知限制
+## Limitations
 
-- 只监听 `127.0.0.1`，不对外网提供服务。
-- 只做协议转换，**不**做模型名映射、不做多账号轮询、不做用量统计——需要这些请考虑 LiteLLM、one-api 这类完整网关。
-- 不支持 `audio` / `video` 输入（当前 gpt-6 系列官方也不支持）。
-- `auto` 的摘要产出不稳定，原因在上游，网关只负责如实转发。
+- Listens on `127.0.0.1` only; not intended to serve other machines.
+- Protocol translation only — **no** model name mapping, no multi-account rotation, no usage accounting. If you need those, look at LiteLLM or one-api.
+- No `audio` / `video` input (the gpt-6 series doesn't support it either).
+- `auto` summary output is inconsistent; the cause is upstream and the gateway forwards faithfully.
 
-## 免责声明
+## Disclaimer
 
-个人自用项目，按现状提供，不承诺任何形式的支持或可用性保证。请自行评估使用风险，API 费用由你自己的 key 承担。本项目与 OpenAI 无任何关联，"OpenAI"、"GPT" 等为其各自所有者的商标。
+A personal project, provided as-is, with no support or availability guarantee. Use at your own risk; API charges are billed to your own key. Not affiliated with OpenAI. "OpenAI" and "GPT" are trademarks of their respective owners.
 
 ## License
 
