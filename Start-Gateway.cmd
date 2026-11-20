@@ -8,13 +8,12 @@ if /i "%~1"=="help" goto :usage
 if /i "%~1"=="-h" goto :usage
 if /i "%~1"=="--help" goto :usage
 
-rem Port comes from the first argument, defaulting to 8788.
-set "OA_GW_PORT=8788"
-set "SUMMARY="
-if /i "%~1"=="summary" set "SUMMARY=1"
-if not "%~1"=="" if not defined SUMMARY set "OA_GW_PORT=%~1"
-if /i "%~2"=="summary" set "SUMMARY=1"
-if defined SUMMARY set "OA_GW_REASONING_SUMMARY=auto"
+rem An explicit port overrides the environment file; no argument preserves its port.
+if not "%~2"=="" if /i not "%~2"=="summary" goto :usage
+if not "%~3"=="" goto :usage
+if /i "%~1"=="summary" set "OA_GW_REASONING_SUMMARY=auto"
+if /i "%~2"=="summary" set "OA_GW_REASONING_SUMMARY=auto"
+if not "%~1"=="" if /i not "%~1"=="summary" set "OA_GW_PORT=%~1"
 
 rem Never inherit credentials from the calling shell; the env file is the only source.
 set "OPENAI_API_KEY="
@@ -36,7 +35,7 @@ exit /b 0
 echo Usage: Start-Gateway.cmd [PORT^|summary] [summary]
 echo        Start-Gateway.cmd probe
 echo.
-echo   Start-Gateway.cmd              start on the default port 8788
+echo   Start-Gateway.cmd              start on the configured port ^(default 8788^)
 echo   Start-Gateway.cmd 8789         start on a custom port
 echo   Start-Gateway.cmd summary      start with reasoning summaries enabled
 echo   Start-Gateway.cmd probe        run the offline synthetic summary probe

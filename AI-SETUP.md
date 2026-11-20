@@ -1,341 +1,81 @@
-# Let an AI install this for you
+# 🤖 WorkBuddy gateway: AI setup guide
 
-**English** | [简体中文](AI-SETUP.zh-CN.md)
+**English** · [简体中文](AI-SETUP.zh-CN.md) · [Home](README.md)
 
-> This file is written **for an AI assistant**, not as a human tutorial. A human only needs to do one thing: **hand this whole folder to your AI and say "install this following AI-SETUP.md"**.
->
-> The AI does the rest: probing, configuring, starting, verifying. It comes back to you only for your API key and a couple of choices.
+For an assistant authorized to help with installation. Configure only the selected models. Do not ask for, read out or collect keys. Leave the private steps below to the user.
 
----
+## 1. Check the environment and scope
 
-## Ground rules for the AI
+- Run `node --version`: Node.js 22+ is required, with no npm dependencies to install.
+- Confirm model IDs, summary preference, upstream and proxy. The default port is `8788`. Inspect it with `Get-NetTCPConnection -State Listen -LocalPort 8788` on Windows or `lsof -nP -iTCP:8788 -sTCP:LISTEN` where available. Identify any existing listener; **do not stop unknown processes**. Choose an unused port for a side-by-side check (e.g. `8790`, after checking). The offline probe uses `8789`.
+- Confirm the proxy supports HTTP CONNECT, not just that a port is open. Use `OA_GW_NO_PROXY=1` for direct connections where available. Do not install proxies or change TLS verification or system networking without authorization.
+- Give the user an expected request count before any potentially billable tests and obtain approval. Otherwise run local checks only.
 
-Read this first. Violating any of these means the task failed.
+## 2. Prepare the private configuration
 
-1. **Never claim success without evidence.** Every step needs real command output. If you have no output, do not write "done".
-2. **The key goes into the env file only.** The user's `sk-` key belongs in `~/.workbuddy/oa-gateway-v2.env` and **nowhere else** — not `models.json`, not command-line args, not logs, not git, not your reply. Never echo it.
-3. **`apiKey` in `models.json` is the local token, not an `sk-` key.** This is the single most common mistake — see [Step 4](#step-4-point-workbuddy-at-the-gateway).
-4. **Verification means real requests.** `--check-config` alone is not success.
-5. **When unsure, test it.** Do not assert ports, model IDs, or field names from memory.
-6. **Touch nothing you weren't asked to change.** Only add/modify the OpenAI entries you are installing. Leave the user's other entries exactly as they are.
+Defaults: `%USERPROFILE%\.workbuddy\oa-gateway-v2.env` (Windows) or `~/.workbuddy/oa-gateway-v2.env` (macOS/Linux). Ensure the directory exists. **Keep existing configuration**; check file presence without showing contents or overwriting it.
 
-> All commands here are **POSIX shell**. On Windows use Git Bash (ships with Git for Windows), not PowerShell — `$HOME`, `$(...)` and `grep` behave differently there.
+1. On a new install, prepare only an empty file or placeholders. Restrict access first. The user fills in `OPENAI_API_KEY` and a separate `OA_GW_LOCAL_TOKEN` in a local editor. They can generate the token in a private terminal using `node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'))"`; do not capture its output. Never send either credential to chat, on a command line, into logs or into Git. The local token must be at least 24 characters.
+2. **Windows:** In Properties → Security → Advanced, inspect the NTFS ACL. If inheritance grants other ordinary users access, restrict this new file to the account running the gateway and necessary system/admin principals. Check with `icacls "$env:USERPROFILE\.workbuddy\oa-gateway-v2.env"` in PowerShell. Node `mode: 0o600` or Git Bash `chmod` **does not prove that Windows ACLs restrict access**.
+3. **macOS/Linux:** Use `umask 077` before creation; apply `chmod 600 ~/.workbuddy/oa-gateway-v2.env` and verify with `ls -l`. Do not overwrite an existing file or put it in a shared directory.
+4. **Legacy migration only:** With explicit approval, `node oa-gateway.js --init-config MODEL_ID` copies an existing key from an exact local model entry without overwriting the destination. On Windows, first verify the destination directory's inherited ACL; use the manual setup if unsure. Have the user replace that old model's API key value with the local token after migration; do not batch-edit other entries.
 
----
+Set `OA_GW_PORT=8790` if needed, `OA_GW_NO_PROXY=1` for direct connections, or `OA_GW_PROXY_PORT` for HTTP CONNECT. Reasoning summaries are off by default; `OA_GW_REASONING_SUMMARY=auto` requests them but does not guarantee any will be returned.
 
-## Step 0: Probe the environment (read-only, change nothing yet)
+## 3. Check, start and verify locally
 
-```bash
-node --version
+Run from the extracted directory. `8790` is an example; use the selected port. Run the last command in another terminal. You can also put the port in the env file and omit `--port`. If using a non-default config path, pass the same `--config-file` for every operation.
+
+```sh
+node oa-gateway.js --port 8790 --check-config
+node oa-gateway.js --port 8790
+node oa-gateway.js --port 8790 --verify-local
 ```
 
-Requires **Node.js ≥ 22** (the code uses `process.loadEnvFile`). If lower, ask the user to upgrade — do not patch around it.
+Check for `config: ok` and the expected listener address. Local verification must show `ok: true`, `authStatus: 401`, and `upstreamAttempts: 0`. Do not send a token if this fails. On Windows, `Start-Gateway.cmd 8790` also works; no port argument preserves the configured port. Get separate approval for background or autostart setup, and only manage this project's process.
 
-```bash
-ls -la "$USERPROFILE/.workbuddy/models.json"    # Windows
-ls -la "$HOME/.workbuddy/models.json"           # macOS / Linux
-```
+## 4. Add only the selected models
 
-```bash
-# Is a local proxy listening? (7897 is Clash's usual port)
-netstat -ano | grep LISTEN | grep -E ":7897|:7890|:1080|:10809"
-```
+Prefer WorkBuddy's model settings. Enter `http://127.0.0.1:ACTUAL_PORT/v1` and a real model ID available to the user. Have the user enter `OA_GW_LOCAL_TOKEN` as the API key. The UI's connection test may make a live request; don't run it without authorization.
 
-```bash
-# Is the gateway port already taken?
-netstat -ano | grep LISTEN | grep ":8788"
-```
-
-**Decide three things from the results:**
-
-| Probe result | Decision |
-|---|---|
-| No local proxy listening | Add `OA_GW_NO_PROXY=1`, otherwise the gateway dials a proxy that isn't there and fails |
-| Proxy exists, but not on 7897 | Set `OA_GW_PROXY_PORT=<actual port>` |
-| 8788 already taken | Pick another port (`OA_GW_PORT=...`) and update `url` in `models.json` to match |
-
-## Step 1: Collect four things from the user
-
-Ask all four in one go, not as a back-and-forth:
-
-1. **OpenAI API key** (`sk-...`). Tell them it is written to one local file with mode 0600 and appears nowhere else.
-2. **Which models.** If unsure, offer this default list (ordered strongest → cheapest):
-
-   | Model ID | Display name | Positioning |
-   |---|---|---|
-   | `gpt-6.2-astra` | OpenAI-GPT 6.2 ASTRA | Strongest, most expensive |
-   | `gpt-6.2-sol` | OpenAI-GPT 6.2 SOL | Main workhorse |
-   | `gpt-6.1-terra` | OpenAI-GPT 6.1 TERRA | Cheaper |
-   | `gpt-6-luna` | OpenAI-GPT 6 LUNA | Cheapest |
-
-   > This assumes the account has access to them. If the user says one doesn't work, test each and trust the test — don't copy this table blindly.
-
-3. **Reasoning summaries on or off.** Explain the trade-off: enabling them costs extra output tokens, and **upstream provides them on demand** — you get summaries when the model actually thinks for a while, and nothing on trivial prompts. "Sometimes there's no thinking block" is normal, not a misconfiguration.
-4. **Port** (default 8788 — only change it if taken).
-
-## Step 2: Write the env file
-
-Target: `~/.workbuddy/oa-gateway-v2.env`.
-
-**Prefer the built-in command**, which generates a random local token and sets mode 0600:
-
-```bash
-node oa-gateway.js --init-config gpt-6.2-sol
-```
-
-Know its constraints:
-
-- It looks up the row in `models.json` whose `id` matches, whose `url` points at localhost, and whose `apiKey` starts with `sk-`, then extracts that key.
-- **It fails if no such row exists yet** — in that case skip it and create the file by hand.
-- It **never overwrites** an existing file; it errors out. That's intentional.
-- If `models.json` already holds a local token (a previous install), you must use the manual path.
-
-Manual creation:
-
-```bash
-TOKEN=$(node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))")
-cat > "$HOME/.workbuddy/oa-gateway-v2.env" <<EOF
-OPENAI_API_KEY=the-users-real-key
-OA_GW_LOCAL_TOKEN=$TOKEN
-EOF
-chmod 600 "$HOME/.workbuddy/oa-gateway-v2.env"
-```
-
-Then append the optional lines indicated by Step 0:
-
-```ini
-# No local proxy — important, or it cannot connect
-OA_GW_NO_PROXY=1
-
-# Proxy on a non-default port
-OA_GW_PROXY_PORT=7890
-
-# Non-default listen port
-OA_GW_PORT=8788
-
-# Enable reasoning summaries
-OA_GW_REASONING_SUMMARY=auto
-```
-
-**Rules:** `OPENAI_API_KEY` and `OA_GW_LOCAL_TOKEN` **must differ** or startup is refused; the local token must be at least 24 characters.
-
-## Step 3: Validate the config (no requests, no cost)
-
-```bash
-node oa-gateway.js --check-config
-```
-
-Expect something like:
-
-```json
-{"config":"ok","version":"2.1.0","listen":"127.0.0.1:8788","upstream":"api.openai.com","proxy":"127.0.0.1:7897","localAuth":"required","reasoningSummary":"auto","requestsSent":0}
-```
-
-Check the port under `listen` and that `proxy` matches reality (it should read `off` when no proxy is used). `requestsSent: 0` confirms nothing was sent.
-
-**Do not continue if this errors.** Usual causes: Node too old, wrong env path, key equals token, or `OA_GW_REASONING_SUMMARY` set to something other than `auto`/`off`.
-
-## Step 4: Point WorkBuddy at the gateway
-
-Edit `~/.workbuddy/models.json`. It is an **array** — one entry per model.
-
-Leave existing entries alone; only add or modify the OpenAI entries being installed.
+If requested to edit `~/.workbuddy/models.json`, preserve the array/object shape, other entries and fields. Validate JSON and do not print the whole file.
 
 ```json
 {
   "id": "gpt-6.2-sol",
-  "name": "OpenAI-GPT 6.2 SOL",
+  "name": "GPT-6.2 Sol",
   "vendor": "OpenAI",
-  "url": "http://127.0.0.1:8788/v1",
-  "apiKey": "paste OA_GW_LOCAL_TOKEN here — not the sk- key",
-  "maxInputTokens": 922000,
-  "maxOutputTokens": 128000,
-  "temperature": 1,
+  "url": "http://127.0.0.1:8790/v1",
+  "apiKey": "enter OA_GW_LOCAL_TOKEN locally",
   "supportsToolCall": true,
   "supportsImages": true,
   "supportsReasoning": true,
-  "useCustomProtocol": false,
-  "reasoning": {
-    "defaultEffort": "high",
-    "supportedEfforts": ["low", "medium", "high", "xhigh", "max"],
-    "canDisableThinking": false
-  }
+  "useCustomProtocol": false
 }
 ```
 
-**Hard requirements:**
+Use each model's actual capabilities, context limits and reasoning options. To keep the original entry in a side-by-side test, you can use `gpt-6.2-sol@gateway-v2`; the gateway removes the suffix before sending it upstream.
 
-| Field | Requirement | If wrong |
-|---|---|---|
-| `id` | **Exact real OpenAI model name** | The gateway forwards it verbatim — a typo becomes "model not found" upstream |
-| `apiKey` | **The local token** from `OA_GW_LOCAL_TOKEN` | An `sk-` key here gets rejected (401) |
-| `url` | `http://127.0.0.1:<port>/v1` | Must match the port in env |
-| `vendor` | `OpenAI` | `Custom` just loses the icon (cosmetic) |
-| `canDisableThinking` | `true` **only** for `gpt-6-luna` and `gpt-6.1-terra` | On other models, choosing "disable thinking" gets a 400 upstream |
+## 5. Optional live checks (billable usage)
 
-On `maxInputTokens`: the context is 1,050,000 with up to 128,000 reserved for output, so usable input is roughly **922,000**. Putting 1,050,000 won't crash, but it lets the client believe it can send more than upstream accepts. 922,000 is the honest number.
+Test only selected models. Start with one `text` per model, and optionally use `tool` or `stream` on one appropriate model. One model with all three modes means **three requests**. Do not widen the scope or retry automatically.
 
-**Per-model effort differences:**
-
-| Model | Default effort | Can disable thinking |
-|---|---|---|
-| `gpt-6.2-astra` | `high` | No |
-| `gpt-6.2-sol` | `high` | No |
-| `gpt-6.1-terra` | `high` | **Yes** |
-| `gpt-6-luna` | `xhigh` | **Yes** |
-
-**Then do both of these:**
-
-```bash
-# 1) Prove it is valid JSON — do not trust your own edit
-node -e "JSON.parse(require('fs').readFileSync(process.env.USERPROFILE+'/.workbuddy/models.json','utf8')); console.log('JSON OK')"
+```sh
+node oa-gateway.js --port 8790 --verify-live text gpt-6.2-sol
+node oa-gateway.js --port 8790 --verify-live tool gpt-6.2-sol
+node oa-gateway.js --port 8790 --verify-live stream gpt-6.2-sol
 ```
 
-```bash
-# 2) Prove no real key leaked in (this should print nothing)
-grep -l "sk-" "$HOME/.workbuddy/models.json"
-```
+`text` requires nonempty content and a normal finish. `tool` validates a named no-argument test call but executes nothing. `stream` requires visible content, a normal finish and `[DONE]`. `summaryReceived: false` isn't a streaming failure. The CLI doesn't print credentials or raw responses. Use the [offline probe on 8789](README.md#-reasoning-summaries) if needed, then have the user confirm behaviour in WorkBuddy.
 
-## Step 5: Start the gateway
+## 6. Report and troubleshoot
 
-**Start it in the foreground first and read the log line.** "I launched a background task" is not "it started".
+| Signal | Action |
+|---|---|
+| `wrong_gateway_version` / `health_failed` | Verify the listener, port and version; try a free port without stopping other services. |
+| `local_auth_not_verified` / HTTP 401 | Distinguish a local credential mismatch from rejected upstream auth without printing secrets. |
+| HTTP 400 / 404 | Check the ID, access and parameter support. Don't silently change the production model or effort. |
+| Proxy or TLS errors | Verify HTTP CONNECT settings or whether direct access is appropriate; keep TLS validation enabled. |
+| `missing_complete_text` / `incomplete_stream` | Not a pass. Check truncation or stream errors and get approval before another billable attempt. |
 
-```bash
-node oa-gateway.js
-```
-
-Success looks like:
-
-```
-[gateway 2.1.0] listening on http://127.0.0.1:8788/v1
-```
-
-On Windows the user can also double-click `Start-Gateway.cmd`.
-
-## Step 6: Verify (do not skip)
-
-**6.1 Authentication must be enforced** — no token should be 401:
-
-```bash
-curl -s -o /dev/null -w "%{http_code}\n" -X POST http://127.0.0.1:8788/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model":"gpt-6.2-sol","messages":[{"role":"user","content":"hi"}],"max_tokens":8}'
-```
-
-Must print `401`. If it prints `200`, auth is not working — **stop and investigate**.
-
-**6.2 Every model must actually respond:**
-
-```bash
-TOKEN=$(grep '^OA_GW_LOCAL_TOKEN=' "$HOME/.workbuddy/oa-gateway-v2.env" | cut -d= -f2-)
-
-for M in gpt-6.2-astra gpt-6.2-sol gpt-6.1-terra gpt-6-luna; do
-  printf "%-16s " "$M"
-  curl -s -m 60 -X POST http://127.0.0.1:8788/v1/chat/completions \
-    -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
-    -d "{\"model\":\"$M\",\"messages\":[{\"role\":\"user\",\"content\":\"reply exactly: ok\"}],\"max_tokens\":20}" \
-  | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{const j=JSON.parse(s);console.log(j.choices?'OK '+JSON.stringify(j.choices[0].message.content):'ERR '+JSON.stringify(j.error||j).slice(0,120))}catch(e){console.log('FAIL '+s.slice(0,100))}})"
-done
-```
-
-All four must print `OK`. Any `ERR` → Step 8.
-
-**6.3 Tool calling works** (this is the whole reason the project exists):
-
-```bash
-curl -s -m 60 -X POST http://127.0.0.1:8788/v1/chat/completions \
-  -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
-  -d '{"model":"gpt-6.2-sol","messages":[{"role":"user","content":"Call get_time now, no prose."}],"tools":[{"type":"function","function":{"name":"get_time","description":"Get time","parameters":{"type":"object","properties":{}}}}],"tool_choice":"auto","max_tokens":120}' \
-| node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const j=JSON.parse(s);const c=j.choices[0];console.log('finish='+c.finish_reason+' tool='+(c.message.tool_calls?c.message.tool_calls[0].function.name:'none'))})"
-```
-
-Expect `finish=tool_calls tool=get_time`.
-
-**6.4 Streaming works:**
-
-```bash
-curl -sN -m 60 -X POST http://127.0.0.1:8788/v1/chat/completions \
-  -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
-  -d '{"model":"gpt-6.2-sol","stream":true,"messages":[{"role":"user","content":"count 1 2 3"}],"max_tokens":40}' \
-| grep -c "^data:"
-```
-
-Should be greater than 1.
-
-## Step 7: Make it persistent (optional, strongly recommended)
-
-The process idles at 0 CPU and ~40–50 MB RAM. **Don't go "start it only when I need it"**: when it's down, only these models fail with "connection refused" while everything else works, and that half-broken state is hard to trace back to a missing process.
-
-### Windows: a VBS launcher (hidden window + crash recovery)
-
-Create `start.vbs` next to `oa-gateway.js`. **Build quotes with `Chr(34)` — never hand-write consecutive escaped quotes.** This is a real trap that was hit in practice: get it wrong and the script fails to compile, the double-click does nothing, and no error is shown.
-
-```vbs
-Option Explicit
-Dim sh, fso, dir, Q, cmd
-Set sh  = CreateObject("WScript.Shell")
-Set fso = CreateObject("Scripting.FileSystemObject")
-dir = fso.GetParentFolderName(WScript.ScriptFullName)
-Q   = Chr(34)
-cmd = "cmd /c node " & Q & dir & "\oa-gateway.js" & Q & " >> " & Q & dir & "\oa-gateway.log" & Q & " 2>&1"
-Do
-  sh.Run cmd, 0, True
-  WScript.Sleep 5000
-Loop
-```
-
-The loop restarts the gateway 5 seconds after it exits. Single-instance behaviour comes from the gateway itself: a taken port makes it exit non-zero, and this loop then retries every 5 seconds. If you don't want the retry noise, kill the process holding the port before launching.
-
-Autostart: put a shortcut to the `.vbs` into `shell:startup` (`Win+R` → `shell:startup`). Some security suites silently block VBS at logon; fall back to `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
-
-### macOS / Linux
-
-Use the platform service manager (launchd / systemd user unit) to run `node oa-gateway.js` with that directory as the working dir and restart-on-failure enabled. **No template is shipped here** — untested templates are worse than none.
-
-### Prove persistence actually works
-
-This is the one thing you cannot infer — **kill it, wait, confirm it came back**:
-
-```bash
-netstat -ano | grep ":8788" | grep LISTEN
-```
-
-Kill that PID, wait 8 seconds, look again. New PID + still listening = recovery works.
-
-**Logon autostart can only be confirmed by the user on their next login.** Say so plainly and give them the check command. Do not claim "autostart configured, it will run on boot".
-
-## Step 8: Troubleshooting
-
-| Symptom | Cause | Fix |
-|---|---|---|
-| `ECONNREFUSED 127.0.0.1:8788` | Gateway isn't running | Start it; if it was meant to be persistent, check whether the launcher itself died |
-| `proxy_closed` / `upstream_unreachable` | Gateway is dialling a proxy that isn't there | `OA_GW_NO_PROXY=1` without a proxy; otherwise check `OA_GW_PROXY_PORT` |
-| `upstream_tls_failed` | TLS handshake failed | Bad proxy node, or something intercepting certificates |
-| `401` even with the right token | `apiKey` in `models.json` is an `sk-` key | Replace with `OA_GW_LOCAL_TOKEN` |
-| Upstream says model not found | Wrong `id`, or no access to that model | Use the real model name; verify account access |
-| `Function tools ... not supported` | Request bypassed the gateway | Make sure `url` points at `127.0.0.1:8788/v1`, not `api.openai.com` |
-| "Disable thinking" still shows thinking | That model has no `none` effort | The gateway downgrades to `low`. Only luna/terra truly disable. When a new model gains `none`, add it to `OA_GW_NONE_MODELS` |
-| Summaries enabled but nothing appears | Upstream provides them on demand | Expected. Short thinking → no summary. Retrying may produce one |
-| Saving in the settings UI resets name/icon to `Custom` | The client overwrites the whole record with form values | Restore `vendor: "OpenAI"` and `name`. Prefer editing the file directly for parameter changes |
-
-## Things you must not do
-
-- ❌ Don't modify gateway source to make it "work" (relaxing auth, disabling TLS verification). Diagnose with Step 8 first.
-- ❌ Don't put an `sk-` key into `models.json`, the README, a screenshot, or a commit.
-- ❌ Don't tell the user it's installed without testing. They will verify on their own machine and come back.
-- ❌ Don't "improve" the user's other model entries.
-- ❌ Don't bind the listener to `0.0.0.0`. It is designed for localhost only.
-
-## Definition of done
-
-Installed only when all of these are true:
-
-- [ ] `--check-config` prints `config: ok`
-- [ ] A request without a token returns **401**
-- [ ] Every target model returned real content
-- [ ] Tool calling returns `finish_reason: tool_calls`
-- [ ] Streaming returned multiple `data:` frames
-- [ ] `models.json` is valid JSON and contains no `sk-`
-- [ ] The user knows that a down gateway breaks only these models, and how to restart it
-
-Then report results to the user as a table (model / status / latency), and tell them the one thing only they can do: **send a real message in WorkBuddy and see it answer**.
+Report the actual address, models and modes tested, their outcomes, and the number of attempted live requests. **Local checks, OpenAI connectivity, and the WorkBuddy UI are separate verification levels.**

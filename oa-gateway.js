@@ -11,7 +11,7 @@ const path = require('node:path');
 const { createHash, timingSafeEqual, randomUUID, randomBytes } = require('node:crypto');
 const { once } = require('node:events');
 
-const VERSION = '2.1.0';
+const VERSION = '2.1.1';
 const MiB = 1024 * 1024;
 const SUMMARY_LIMIT = 256 * 1024;
 const isObject = v => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -731,7 +731,7 @@ function createGateway(cfg, options = {}) {
     const url = req.url.split('?', 1)[0];
     const localError = (err, more = {}) => sendJson(res, err.status, errorObject(err), { Connection: 'close', ...more });
     if (!trustedHost(req.headers.host)) return localError(new GatewayError(403, 'invalid_local_host', 'Use the loopback gateway address'));
-    if (req.method === 'GET' && url === '/health') return sendJson(res, 200, { ok: true, version: VERSION });
+    if (req.method === 'GET' && url === '/health') return sendJson(res, 200, { ok: true, version: VERSION, mode: options.probe ? 'probe' : 'gateway' });
     const chat = url === '/chat/completions' || url === '/v1/chat/completions';
     const models = url === '/models' || url === '/v1/models';
     if (!chat && !models) return localError(new GatewayError(404, 'not_found', 'Unknown gateway route'));
@@ -859,7 +859,7 @@ function startSummaryProbe() {
       : body?.stream ? Readable.from(events()) : Readable.from([Buffer.from(JSON.stringify(response))]);
     return Object.assign(stream, { statusCode: 200, headers: { 'content-type': type } });
   } };
-  listenCli(createGateway(cfg, { transport }), cfg.port, `Local fake-token only: ${localToken}; model: ${model}; no upstream network.`);
+  listenCli(createGateway(cfg, { transport, probe: true }), cfg.port, `Local fake-token only: ${localToken}; model: ${model}; no upstream network.`);
 }
 
 function listenCli(server, port, details = '') {
@@ -878,17 +878,93 @@ function listenCli(server, port, details = '') {
   });
 }
 
-function cli() {
+async function verifyGateway(cfg, live) {
+  let requests = 0;
+  let stage = 'health';
+  const diagnostics = { port: cfg.port, version: VERSION, mode: live?.mode || 'local' };
+  const fail = code => ({ ...diagnostics, ok: false, code, upstreamAttempts: requests });
+  const request = (route, body, auth) => new Promise((resolve, reject) => {
+    const payload = body === undefined ? null : Buffer.from(JSON.stringify(body));
+    const r = http.request({ host: '127.0.0.1', port: cfg.port, path: route, agent: false,
+      signal: AbortSignal.timeout(90000), method: payload ? 'POST' : 'GET',
+      headers: { ...(payload ? { 'Content-Type': 'application/json', 'Content-Length': payload.length } : {}),
+        ...(auth ? { Authorization: 'Bearer ' + cfg.token } : {}) } }, up => {
+      up.on('error', () => {});
+      resolve(up);
+    });
+    r.on('error', reject);
+    r.end(payload || undefined);
+  });
+  const post = (body, auth) => request('/v1/chat/completions', body, auth);
+  const read = r => readJson(r, 1024 * 1024, 'upstream');
+  try {
+    const h = await request('/health');
+    const health = await read(h);
+    if (h.statusCode !== 200 || health?.ok !== true || health.version !== VERSION || health.mode !== 'gateway') return fail('wrong_gateway_version');
+    stage = 'auth';
+    const unauth = await post({}, false);
+    if (unauth.statusCode !== 401) { unauth.destroy(); return fail('local_auth_not_verified'); }
+    if ((await read(unauth)).error?.code !== 'invalid_local_token') return fail('local_auth_not_verified');
+    if (!live) return { ...diagnostics, ok: true, authStatus: 401, upstreamAttempts: 0 };
+    diagnostics.model = live.model;
+    stage = 'live_request';
+    const body = { model: live.model, reasoning_effort: 'low', max_completion_tokens: 768,
+      messages: [{ role: 'user', content: live.mode === 'tool' ? 'Call gateway_test now.' : 'Reply with the single word pong.' }] };
+    if (live.mode === 'tool') {
+      body.tools = [{ type: 'function', function: { name: 'gateway_test', parameters: { type: 'object', properties: {}, additionalProperties: false }, strict: true } }];
+      body.tool_choice = { type: 'function', function: { name: 'gateway_test' } };
+    }
+    if (live.mode === 'stream') body.stream = true;
+    requests++;
+    const res = await post(body, true);
+    diagnostics.httpStatus = res.statusCode;
+    if (res.statusCode !== 200) { res.destroy(); return fail('live_http_error'); }
+    stage = 'live_response';
+    if (live.mode === 'stream') {
+      if (!/^text\/event-stream(?:\s*;|$)/i.test(res.headers['content-type'] || '')) { res.destroy(); return fail('expected_event_stream'); }
+      let done = false, finished = false, visible = false, summary = false;
+      for await (const frame of parseSse(res, 1024 * 1024)) {
+        if (done) return fail('trailing_sse_data');
+        if (frame.data === '[DONE]') { done = true; continue; }
+        const e = JSON.parse(frame.data);
+        if (e.error) return fail('live_stream_error');
+        const c = e.choices?.[0];
+        if (typeof c?.delta?.content === 'string' && c.delta.content.trim()) visible = true;
+        if (typeof c?.delta?.reasoning_content === 'string' && c.delta.reasoning_content.trim()) summary = true;
+        if (c?.finish_reason === 'stop') finished = true;
+      }
+      diagnostics.summaryReceived = summary;
+      if (!done || !finished || !visible) return fail('incomplete_stream');
+    } else {
+      const c = (await read(res)).choices?.[0];
+      if (live.mode === 'text' && (c?.finish_reason !== 'stop' || typeof c.message?.content !== 'string' || !c.message.content.trim())) return fail('missing_complete_text');
+      if (live.mode === 'tool') {
+        const call = c?.message?.tool_calls?.[0];
+        let params;
+        try { params = JSON.parse(call?.function?.arguments); } catch { /* validated below */ }
+        if (c?.finish_reason !== 'tool_calls' || !nonempty(call?.id) || call.function?.name !== 'gateway_test' || !isObject(params) || Object.keys(params).length) return fail('missing_expected_tool_call');
+      }
+    }
+    return { ...diagnostics, ok: true, authStatus: 401, upstreamAttempts: requests };
+  } catch { return fail(`${stage}_failed`); }
+}
+
+async function cli() {
   const args = process.argv.slice(2);
   if (args.length === 1 && args[0] === '--probe-summary') return startSummaryProbe();
-  let check = false, explicitFile, initModel;
+  let check = false, explicitFile, initModel, verify = false, live, port;
   while (args.length) {
     const arg = args.shift();
     if (arg === '--check-config' && !check) check = true;
     else if (arg === '--config-file' && !explicitFile && args[0] && !args[0].startsWith('--')) explicitFile = args.shift();
     else if (arg === '--init-config' && !initModel && args[0] && !args[0].startsWith('--')) initModel = args.shift();
-    else throw new Error('Usage: node oa-gateway.js [--config-file PATH] [--check-config | --init-config MODEL_ID]');
+    else if (arg === '--port' && port === undefined && /^\d{1,5}$/.test(args[0] ?? '') && Number(args[0]) >= 1 && Number(args[0]) <= 65535) port = args.shift();
+    else if (arg === '--verify-local' && !verify) verify = true;
+    else if (arg === '--verify-live' && !live && /^(?:text|tool|stream)$/.test(args[0] ?? '') && /^[a-zA-Z0-9][a-zA-Z0-9_.:@-]{0,127}$/.test(args[1] ?? '')) {
+      live = { mode: args.shift(), model: args.shift() };
+    } else throw new Error('Usage: node oa-gateway.js [--config-file PATH] [--port PORT] [--check-config | --init-config MODEL_ID | --verify-local | --verify-live text|tool|stream MODEL_ID]');
   }
+  if ([check, initModel, verify, live].filter(Boolean).length > 1) throw new Error('Select only one CLI operation');
   const profile = process.env.USERPROFILE || process.env.HOME;
   const configFile = explicitFile ?? (profile ? path.join(profile, '.workbuddy', 'oa-gateway-v2.env') : null);
   if (initModel) {
@@ -905,7 +981,13 @@ function cli() {
     return;
   }
   if (explicitFile || (configFile && fs.existsSync(configFile))) process.loadEnvFile(configFile);
-  const cfg = configFrom(process.env);
+  const cfg = configFrom(port === undefined ? process.env : { ...process.env, OA_GW_PORT: port });
+  if (verify || live) {
+    const result = await verifyGateway(cfg, live);
+    console.log(JSON.stringify(result));
+    if (!result.ok) process.exitCode = 1;
+    return;
+  }
   if (check) {
     console.log(JSON.stringify({ config: 'ok', version: VERSION, listen: `127.0.0.1:${cfg.port}`, upstream: cfg.host, proxy: cfg.useProxy ? `${cfg.proxyHost}:${cfg.proxyPort}` : 'off', localAuth: 'required', reasoningSummary: cfg.summary, requestsSent: 0 }));
     return;
@@ -913,9 +995,9 @@ function cli() {
   listenCli(createGateway(cfg), cfg.port);
 }
 if (require.main === module) {
-  try { cli(); } catch (e) {
+  cli().catch(e => {
     console.error(`[gateway] ${e.code ? 'Cannot load environment configuration' : e.message}`);
     process.exitCode = 1;
-  }
+  });
 }
-module.exports = { configFrom, createGateway, makeTransport, parseSse, convertChat, reasoningMemory, VERSION };
+module.exports = { configFrom, createGateway, makeTransport, parseSse, convertChat, reasoningMemory, verifyGateway, VERSION };

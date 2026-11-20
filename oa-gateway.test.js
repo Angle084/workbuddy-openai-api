@@ -11,7 +11,7 @@ const net = require('node:net');
 const http = require('node:http');
 const https = require('node:https');
 const path = require('node:path');
-const { configFrom, createGateway, makeTransport, parseSse, convertChat, reasoningMemory } = require('./oa-gateway');
+const { configFrom, createGateway, makeTransport, parseSse, convertChat, reasoningMemory, verifyGateway, VERSION } = require('./oa-gateway');
 
 const token = 'local-test-token-not-for-production';
 const key = 'sk-test-transport-fixture';
@@ -354,6 +354,48 @@ test('idle timeout before SSE data and after partial SSE; enforce concurrency', 
   assert.equal(fail.status, 504); assert.equal((await fail.json()).error.code, 'upstream_idle_timeout');
   const result = await decode(await f.request(body({ stream: true })));
   assert.equal(result.error.code, 'upstream_idle_timeout'); assert.equal(result.end, false);
+});
+
+test('installation verification uses the configured port and local mode never calls upstream', async t => {
+  const f = await fixture(t, () => { throw Error('unexpected upstream call'); });
+  const result = await verifyGateway(cfg({ port: f.port }));
+  assert.equal(result.ok, true); assert.equal(result.authStatus, 401); assert.equal(result.upstreamAttempts, 0);
+  assert.equal(f.history.length, 0);
+});
+
+test('installation verification rejects a same-version synthetic probe without sending any credentials', async t => {
+  const requests = [];
+  const wrong = http.createServer((req, res) => {
+    requests.push({ path: req.url, hasAuth: Boolean(req.headers.authorization) });
+    res.end(JSON.stringify({ ok: true, version: VERSION, mode: 'probe' }));
+  });
+  t.after(track(wrong));
+  const port = await listen(wrong);
+  const result = await verifyGateway(cfg({ port }), { mode: 'text', model: 'mock-model' });
+  assert.equal(result.ok, false); assert.equal(result.code, 'wrong_gateway_version'); assert.equal(result.upstreamAttempts, 0);
+  assert.deepEqual(requests, [{ path: '/health', hasAuth: false }]);
+});
+
+test('live verification requires actual text, the named tool or a complete stream; never prints bodies', async t => {
+  const f = await fixture(t, ({ body: b }, i) => {
+    if (i === 1) return json(reply([]));
+    if (i === 2) return json(reply([msg('pong')]));
+    if (i === 3) return json(reply([call('other', 1, '{}')]));
+    if (i === 4) return json(reply([call('gateway_test', 1, '{}')]));
+    if (i === 5) return sse([frame(delta('pong'))]);
+    return sse([frame(delta('pong')), frame(completed([msg('pong')]))]);
+  });
+  const run = mode => verifyGateway(cfg({ port: f.port }), { mode, model: 'mock-model' });
+  assert.equal((await run('text')).code, 'missing_complete_text');
+  assert.equal((await run('text')).ok, true);
+  assert.equal((await run('tool')).code, 'missing_expected_tool_call');
+  assert.equal((await run('tool')).ok, true);
+  assert.equal((await run('stream')).code, 'live_stream_error');
+  const success = await run('stream');
+  assert.equal(success.ok, true); assert.equal(success.summaryReceived, false); assert.equal(success.upstreamAttempts, 1);
+  assert.equal(f.history.length, 6);
+  assert.ok(f.history.every(r => r.body.model === 'mock-model'));
+  assert.doesNotMatch(JSON.stringify(success), /pong|local-test-token/);
 });
 
 const openssl = process.env.OA_GW_TEST_OPENSSL || (process.platform === 'win32' && fs.existsSync('C:/Program Files/Git/mingw64/bin/openssl.exe') ? 'C:/Program Files/Git/mingw64/bin/openssl.exe' : 'openssl');
